@@ -34,6 +34,26 @@ public static class Formatting
         return $"{directoryPath}   {objects}{selected}{disk}";
     }
 
+    /// <summary>
+    /// The display form of a name under the original's LowerCase attribute.
+    /// UppercaseNames lowercases a name that is stored all-uppercase (the
+    /// directory entry flag the original read as ATTR_LOWERCASE, approximated
+    /// here as: at least one letter and no lowercase letters). All lowercases
+    /// every name. Display only.
+    /// </summary>
+    public static string DisplayName(string name, LowerCaseMode mode)
+    {
+        if (mode == LowerCaseMode.Off || name.Length == 0) return name;
+        if (mode == LowerCaseMode.All) return name.ToLowerInvariant();
+        var hasLetter = false;
+        foreach (var ch in name)
+        {
+            if (char.IsLower(ch)) return name;
+            if (char.IsLetter(ch)) hasLetter = true;
+        }
+        return hasLetter ? name.ToLowerInvariant() : name;
+    }
+
     /// <summary>Long path helper. The original handled paths up to 1024 characters once Windows long paths were on.</summary>
     public static string ToLongPath(string path)
     {

@@ -1,3 +1,5 @@
+using System.IO.Enumeration;
+
 namespace WinFile.Core;
 
 /// <summary>How the directory pane sorts its entries. Mirrors the View menu of the original.</summary>
@@ -80,6 +82,39 @@ public sealed record FileEntry(
             reparse,
             target);
     }
+
+    /// <summary>
+    /// Builds an entry straight from enumeration data, with no per-file stat call.
+    /// This is the fast path for listing and searching large directories: the find
+    /// data already carries size, times, and attributes. Only reparse points pay
+    /// for a FileInfo, to resolve their link target.
+    /// </summary>
+    public static FileEntry FromEntry(FileSystemEntry entry)
+    {
+        var isDir = entry.IsDirectory;
+        string? target = null;
+        var reparse = (entry.Attributes & FileAttributes.ReparsePoint) != 0;
+        var fullPath = entry.ToSpecifiedFullPath();
+        if (reparse)
+        {
+            try
+            {
+                FileSystemInfo info = isDir ? new DirectoryInfo(fullPath) : new FileInfo(fullPath);
+                target = info.LinkTarget;
+            }
+            catch { /* link target is best effort */ }
+        }
+        return new FileEntry(
+            fullPath,
+            entry.FileName.ToString(),
+            isDir,
+            isDir ? 0 : entry.Length,
+            entry.LastWriteTimeUtc.UtcDateTime,
+            entry.CreationTimeUtc.UtcDateTime,
+            entry.Attributes,
+            reparse,
+            target);
+    }
 }
 
 /// <summary>One logical drive as the drive bar displays it.</summary>
@@ -108,15 +143,43 @@ public sealed record DriveEntry(
     }
 }
 
-/// <summary>The five confirmation toggles from Options &gt; Confirmation.</summary>
+/// <summary>
+/// The six confirmation toggles from Options &gt; Confirmation, one per Confirm*
+/// key in the original's Winfile.ini: file delete, directory (subtree) delete,
+/// file replace, mouse operation, disk format, and editing system, hidden, or
+/// read-only files. All default on, as in the original.
+/// </summary>
 public sealed record ConfirmationSettings(
     bool OnDelete = true,
+    bool OnSubtreeDelete = true,
     bool OnReplace = true,
     bool OnMouseAction = true,
-    bool OnCopy = false,
-    bool OnMove = false)
+    bool OnFormat = true,
+    bool OnReadOnlySystemHidden = true)
 {
     public static readonly ConfirmationSettings Default = new();
+}
+
+/// <summary>Why a delete needs confirmation, in the original's priority order.</summary>
+public enum DeleteConfirmReason
+{
+    None,
+    Delete,
+    SubtreeDelete,
+    ProtectedFile,
+}
+
+/// <summary>
+/// The original's LowerCase display attribute (winfile.h TA_LOWERCASE 0x01,
+/// TA_LOWERCASEALL 0x08, stored as the "LowerCase" value in Winfile.ini).
+/// UppercaseNames lowercases names that are stored all-uppercase, the way the
+/// original softened 8.3-era names. All lowercases every name.
+/// </summary>
+public enum LowerCaseMode
+{
+    Off = 0,
+    UppercaseNames = 1,
+    All = 8,
 }
 
 /// <summary>Partial Details choices from View &gt; Partial Details.</summary>
@@ -144,6 +207,16 @@ public sealed class WinFileSettings
     public bool MinimizeOnUse { get; set; }
     public bool IndexOnLaunch { get; set; }
     public bool SaveSettingsOnExit { get; set; } = true;
+    /// <summary>The original's ChangeNotifyTime: how long the directory watcher waits out a burst of changes before refreshing, in milliseconds.</summary>
+    public int ChangeNotifyTimeMs { get; set; } = 3000;
+    /// <summary>The original's FaceWeight: 400 is normal, 700 is bold.</summary>
+    public int FontWeight { get; set; } = 400;
+    /// <summary>The original's NewWinOnNetConnect: open a new child window when a network drive connects.</summary>
+    public bool NewWindowOnConnect { get; set; }
+    /// <summary>The original's IndexHiddenSystem: include hidden and system directories in the goto index.</summary>
+    public bool IndexHiddenSystem { get; set; }
+    /// <summary>The original's LowerCase display attribute. Display only: names on disk never change case.</summary>
+    public LowerCaseMode LowerCase { get; set; } = LowerCaseMode.Off;
     public SortMode Sort { get; set; } = SortMode.Name;
     public ViewDetailMode ViewDetails { get; set; } = ViewDetailMode.AllDetails;
     public PaneView Pane { get; set; } = PaneView.TreeAndDirectory;
@@ -158,6 +231,8 @@ public sealed class WinFileSettings
     public int? WindowY { get; set; }
     public int? WindowWidth { get; set; }
     public int? WindowHeight { get; set; }
+    /// <summary>The show command stored as the last field of the original's "Window" ini value (1 is shown normally).</summary>
+    public int WindowShowCommand { get; set; } = 1;
     /// <summary>Toolbar button ids in display order, from Options &gt; Customize Toolbar.</summary>
     public List<string> ToolbarButtons { get; set; } = ["open", "copy", "move", "delete", "rename", "search", "properties"];
 }

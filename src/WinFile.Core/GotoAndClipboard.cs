@@ -7,6 +7,7 @@ namespace WinFile.Core;
 public sealed class GotoIndex
 {
     private readonly List<(string Path, string[] Words)> _entries = [];
+    private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _punctuation;
 
     public GotoIndex(string punctuation = "-_") => _punctuation = punctuation;
@@ -16,7 +17,9 @@ public sealed class GotoIndex
 
     public void Add(string directoryPath)
     {
-        if (_entries.Any(e => string.Equals(e.Path, directoryPath, StringComparison.OrdinalIgnoreCase))) return;
+        // Dedupe through a set: the linear scan this replaces made building an
+        // index over a full drive quadratic in the directory count.
+        if (!_seen.Add(directoryPath)) return;
         _entries.Add((directoryPath, SplitWords(directoryPath)));
     }
 
@@ -26,31 +29,31 @@ public sealed class GotoIndex
     }
 
     /// <summary>Builds the index by walking every ready fixed and removable drive, as "Create Goto Index on Launch" does.</summary>
-    public static GotoIndex BuildFromDrives(string punctuation = "-_", CancellationToken cancellationToken = default)
+    public static GotoIndex BuildFromDrives(string punctuation = "-_", CancellationToken cancellationToken = default, bool includeHiddenSystem = false)
     {
         var index = new GotoIndex(punctuation);
         foreach (var drive in DriveInfo.GetDrives())
         {
             if (!drive.IsReady) continue;
             index.Add(drive.RootDirectory.FullName);
-            Walk(drive.RootDirectory.FullName, index, cancellationToken);
+            Walk(drive.RootDirectory.FullName, index, cancellationToken, includeHiddenSystem);
         }
         return index;
     }
 
-    public static GotoIndex BuildFromRoots(IEnumerable<string> roots, string punctuation = "-_", CancellationToken cancellationToken = default)
+    public static GotoIndex BuildFromRoots(IEnumerable<string> roots, string punctuation = "-_", CancellationToken cancellationToken = default, bool includeHiddenSystem = false)
     {
         var index = new GotoIndex(punctuation);
         foreach (var root in roots)
         {
             if (!Directory.Exists(root)) continue;
             index.Add(root);
-            Walk(root, index, cancellationToken);
+            Walk(root, index, cancellationToken, includeHiddenSystem);
         }
         return index;
     }
 
-    private static void Walk(string root, GotoIndex index, CancellationToken cancellationToken)
+    private static void Walk(string root, GotoIndex index, CancellationToken cancellationToken, bool includeHiddenSystem)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -63,6 +66,17 @@ public sealed class GotoIndex
             catch { continue; }
             foreach (var dir in dirs)
             {
+                // The original's IndexHiddenSystem setting governs whether
+                // hidden and system directories enter the index.
+                if (!includeHiddenSystem)
+                {
+                    try
+                    {
+                        var attrs = File.GetAttributes(dir);
+                        if ((attrs & (FileAttributes.Hidden | FileAttributes.System)) != 0) continue;
+                    }
+                    catch { continue; }
+                }
                 index.Add(dir);
                 pending.Push(dir);
             }

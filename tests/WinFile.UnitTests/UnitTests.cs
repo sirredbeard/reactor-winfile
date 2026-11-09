@@ -230,13 +230,13 @@ public class SettingsStoreTests : IDisposable
             IncludeFilter = "*.cs",
             ShowHiddenAndSystem = true,
             FontName = "Consolas",
-            FontSize = 12.5,
+            FontSize = 12,
             LastDirectory = @"D:\work",
             SplitPosition = 0.5,
             Sort = SortMode.Date,
             ViewDetails = ViewDetailMode.PartialDetails,
             Pane = PaneView.TreeOnly,
-            Confirmations = new ConfirmationSettings(false, false, false, true, true),
+            Confirmations = new ConfirmationSettings(false, false, false, true, true, false),
             PartialDetails = new PartialDetailSettings(false, true, true, true),
             ShowToolbar = false,
             MinimizeOnUse = true,
@@ -254,7 +254,7 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal("*.cs", loaded.IncludeFilter);
         Assert.True(loaded.ShowHiddenAndSystem);
         Assert.Equal("Consolas", loaded.FontName);
-        Assert.Equal(12.5, loaded.FontSize);
+        Assert.Equal(12.0, loaded.FontSize);
         Assert.Equal(@"D:\work", loaded.LastDirectory);
         Assert.Equal(0.5, loaded.SplitPosition);
         Assert.Equal(SortMode.Date, loaded.Sort);
@@ -461,5 +461,226 @@ public class MdiManagerTests
         mdi.NewWindow(@"C:\b");
         mdi.ApplyTileVertical(new WindowRect(0, 0, 800, 600));
         Assert.All(mdi.Windows, w => Assert.Equal(400, w.Bounds.Width));
+    }
+}
+
+public class OriginalIniLayoutTests : IDisposable
+{
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"winfile-test-{Guid.NewGuid():N}.ini");
+    private readonly SettingsStore _store = new();
+
+    public void Dispose()
+    {
+        if (File.Exists(_path)) File.Delete(_path);
+    }
+
+    // A Winfile.ini as the original writes it: one [Settings] section, the
+    // original's key names from winfile.h, booleans as integers, and an
+    // [AddOns] section this app does not own.
+    private const string OriginalIni = """
+        [Settings]
+        ToolBar=0
+        DriveBar=1
+        StatusBar=0
+        MinOnRun=1
+        IndexOnLaunch=1
+        IndexHiddenSystem=1
+        Save Settings=0
+        ScrollOnExpand=0
+        EditorPath=C:\tools\edit.exe
+        CachedPath=D:\cache
+        GotoCachePunctuation=-_.
+        ConfirmDelete=0
+        ConfirmSubDel=0
+        ConfirmReplace=1
+        ConfirmMouse=0
+        ConfirmFormat=1
+        ConfirmSystemHiddenReadOnly=0
+        ChangeNotifyTime=750
+        Face=Consolas
+        Size=14
+        FaceWeight=700
+        LowerCase=8
+        NewWinOnNetConnect=1
+        Window=15,25,1024,768, , ,2
+
+        [AddOns]
+        MyAddon=C:\addons\myaddon.dll
+        """;
+
+    [Fact]
+    public void Load_ReadsTheOriginalsKeys()
+    {
+        File.WriteAllText(_path, OriginalIni);
+        var s = _store.Load(_path);
+        Assert.False(s.ShowToolbar);
+        Assert.True(s.ShowDrivebar);
+        Assert.False(s.ShowStatusBar);
+        Assert.True(s.MinimizeOnUse);
+        Assert.True(s.IndexOnLaunch);
+        Assert.True(s.IndexHiddenSystem);
+        Assert.False(s.SaveSettingsOnExit);
+        Assert.False(s.ScrollOnExpand);
+        Assert.Equal(@"C:\tools\edit.exe", s.EditorPath);
+        Assert.Equal(@"D:\cache", s.CachedPath);
+        Assert.Equal("-_.", s.GotoCachePunctuation);
+        Assert.Equal(new ConfirmationSettings(false, false, true, false, true, false), s.Confirmations);
+        Assert.Equal(750, s.ChangeNotifyTimeMs);
+        Assert.Equal("Consolas", s.FontName);
+        Assert.Equal(14.0, s.FontSize);
+        Assert.Equal(700, s.FontWeight);
+        Assert.Equal(LowerCaseMode.All, s.LowerCase);
+        Assert.True(s.NewWindowOnConnect);
+        Assert.Equal(15, s.WindowX);
+        Assert.Equal(25, s.WindowY);
+        Assert.Equal(1024, s.WindowWidth);
+        Assert.Equal(768, s.WindowHeight);
+        Assert.Equal(2, s.WindowShowCommand);
+    }
+
+    [Fact]
+    public void Load_SparseConfirmationKeys_StandOnTheirOwn()
+    {
+        File.WriteAllText(_path, "[Settings]\nConfirmFormat=0\n");
+        var s = _store.Load(_path);
+        Assert.False(s.Confirmations.OnFormat);
+        Assert.True(s.Confirmations.OnDelete);
+        Assert.True(s.Confirmations.OnSubtreeDelete);
+    }
+
+    [Theory]
+    [InlineData(0, LowerCaseMode.Off)]
+    [InlineData(1, LowerCaseMode.UppercaseNames)]
+    [InlineData(8, LowerCaseMode.All)]
+    [InlineData(9, LowerCaseMode.All)]
+    public void Load_LowerCaseBits_MapToModes(int bits, LowerCaseMode expected)
+    {
+        File.WriteAllText(_path, $"[Settings]\nLowerCase={bits}\n");
+        Assert.Equal(expected, _store.Load(_path).LowerCase);
+    }
+
+    [Fact]
+    public void Save_WritesTheOriginalsKeys_AndKeepsSectionsItDoesNotOwn()
+    {
+        File.WriteAllText(_path, OriginalIni);
+        var s = _store.Load(_path);
+        s.ShowToolbar = true;
+        _store.Save(_path, s);
+        var text = File.ReadAllText(_path);
+        Assert.Contains("ToolBar=1", text);
+        Assert.Contains("DriveBar=1", text);
+        Assert.Contains("Save Settings=0", text);
+        Assert.Contains("ConfirmDelete=0", text);
+        Assert.Contains("ConfirmSubDel=0", text);
+        Assert.Contains("ConfirmSystemHiddenReadOnly=0", text);
+        Assert.Contains("Face=Consolas", text);
+        Assert.Contains("Size=14", text);
+        Assert.Contains("FaceWeight=700", text);
+        Assert.Contains("LowerCase=8", text);
+        Assert.Contains("ChangeNotifyTime=750", text);
+        Assert.Contains("Window=15,25,1024,768, , ,2", text);
+        Assert.Contains("[AddOns]", text);
+        Assert.Contains(@"MyAddon=C:\addons\myaddon.dll", text);
+        Assert.DoesNotContain("[WinFile]", text);
+        Assert.DoesNotContain("FontName=", text);
+    }
+
+    [Fact]
+    public void Load_FirstReleaseLayout_StillReads()
+    {
+        File.WriteAllText(_path, """
+            [Settings]
+            FontName=Consolas
+            FontSize=13
+
+            [WinFile]
+            Toolbar=0
+            Drivebar=1
+            StatusBar=1
+            MinimizeOnUse=1
+            IndexOnLaunch=1
+            SaveSettingsOnExit=0
+            WindowX=5
+            WindowY=6
+            WindowWidth=700
+            WindowHeight=500
+
+            [Confirmation]
+            Flags=False,True,False,True,True
+            """);
+        var s = _store.Load(_path);
+        Assert.Equal("Consolas", s.FontName);
+        Assert.Equal(13.0, s.FontSize);
+        Assert.False(s.ShowToolbar);
+        Assert.True(s.ShowDrivebar);
+        Assert.True(s.MinimizeOnUse);
+        Assert.True(s.IndexOnLaunch);
+        Assert.False(s.SaveSettingsOnExit);
+        Assert.Equal(5, s.WindowX);
+        Assert.Equal(500, s.WindowHeight);
+        Assert.False(s.Confirmations.OnDelete);
+        Assert.True(s.Confirmations.OnReplace);
+        Assert.False(s.Confirmations.OnMouseAction);
+    }
+}
+
+public class DisplayNameTests
+{
+    [Fact]
+    public void Off_NeverChangesNames()
+    {
+        Assert.Equal("README.TXT", Formatting.DisplayName("README.TXT", LowerCaseMode.Off));
+        Assert.Equal("ReadMe.txt", Formatting.DisplayName("ReadMe.txt", LowerCaseMode.Off));
+    }
+
+    [Fact]
+    public void All_LowercasesEverything()
+    {
+        Assert.Equal("readme.txt", Formatting.DisplayName("ReadMe.TXT", LowerCaseMode.All));
+    }
+
+    [Fact]
+    public void UppercaseNames_LowercasesOnlyAllUppercaseNames()
+    {
+        Assert.Equal("readme.txt", Formatting.DisplayName("README.TXT", LowerCaseMode.UppercaseNames));
+        Assert.Equal("ReadMe.txt", Formatting.DisplayName("ReadMe.txt", LowerCaseMode.UppercaseNames));
+        Assert.Equal("file2.txt", Formatting.DisplayName("FILE2.TXT", LowerCaseMode.UppercaseNames));
+        Assert.Equal("123", Formatting.DisplayName("123", LowerCaseMode.UppercaseNames));
+    }
+}
+
+public class IniFilePreservationTests
+{
+    [Fact]
+    public void Set_PreservesCommentsAndUnknownKeys()
+    {
+        var ini = IniFile.Parse("[Settings]\n; my note\nCustomKey=keep\nToolBar=1\n");
+        ini.Set("Settings", "ToolBar", "0");
+        var text = ini.ToString();
+        Assert.Contains("; my note", text);
+        Assert.Contains("CustomKey=keep", text);
+        Assert.Contains("ToolBar=0", text);
+        Assert.True(text.IndexOf("; my note", StringComparison.Ordinal) < text.IndexOf("ToolBar=0", StringComparison.Ordinal),
+            "the comment stays where it was written");
+    }
+
+    [Fact]
+    public void Set_InsertsIntoTheExistingSection()
+    {
+        var ini = IniFile.Parse("[Settings]\nA=1\n\n[Other]\nX=2\n");
+        ini.Set("Settings", "B", "3");
+        var text = ini.ToString();
+        Assert.True(text.IndexOf("B=3", StringComparison.Ordinal) < text.IndexOf("[Other]", StringComparison.Ordinal),
+            "the new key lands inside [Settings], not at the end of the file");
+    }
+
+    [Fact]
+    public void Remove_DropsASectionWhoseLastKeyWentAway()
+    {
+        var ini = IniFile.Parse("[Settings]\nA=1\n\n[WinFile]\nToolbar=0\n");
+        ini.Remove("WinFile", "Toolbar");
+        var text = ini.ToString();
+        Assert.DoesNotContain("[WinFile]", text);
+        Assert.Contains("A=1", text);
     }
 }

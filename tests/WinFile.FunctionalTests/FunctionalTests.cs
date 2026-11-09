@@ -413,3 +413,140 @@ public class WatcherTests
         Assert.True(signal.Wait(TimeSpan.FromSeconds(10)), "watcher should report the new file");
     }
 }
+
+public class WatcherDebounceTests
+{
+    [Fact]
+    public void BurstOfChanges_RaisesChangedOnce()
+    {
+        using var t = new TestDir();
+        using var watcher = new DirectoryWatcher(t.Root, TimeSpan.FromMilliseconds(400));
+        var count = 0;
+        watcher.Changed += (_, _) => Interlocked.Increment(ref count);
+        for (var i = 0; i < 8; i++) t.File($"f{i}.txt");
+        // The burst settles, then exactly one notification should land.
+        Thread.Sleep(TimeSpan.FromMilliseconds(1800));
+        Assert.Equal(1, count);
+    }
+}
+
+public class SelectionDeselectTests
+{
+    [Fact]
+    public void DeselectByPattern_RemovesOnlyMatches()
+    {
+        using var t = new TestDir();
+        var a = t.File("a.txt");
+        var b = t.File("b.txt");
+        var c = t.File("c.md");
+        var scanner = new DirectoryScanner();
+        var entries = scanner.ListDirectoryRaw(t.Root);
+        var remaining = SelectionService.DeselectByPattern(entries, "*.txt", [a, b, c]);
+        Assert.Equal([c], remaining);
+    }
+}
+
+public class LargeTreeTests
+{
+    private static TestDir BuildTree(int dirs, int filesPerDir)
+    {
+        var t = new TestDir();
+        for (var d = 0; d < dirs; d++)
+            for (var f = 0; f < filesPerDir; f++)
+                t.File($"dir{d}/file{f}.txt", "x");
+        return t;
+    }
+
+    [Fact]
+    public void ListDirectory_TwoThousandFiles_NaturalOrder()
+    {
+        using var t = new TestDir();
+        for (var i = 1; i <= 2000; i++) t.File($"f{i}.txt", "x");
+        var scanner = new DirectoryScanner();
+        var entries = scanner.ListDirectory(t.Root, new WinFileSettings());
+        Assert.Equal(2000, entries.Count);
+        var names = entries.Select(e => e.Name).ToList();
+        Assert.True(names.IndexOf("f2.txt") < names.IndexOf("f10.txt"), "natural sort puts f2 before f10");
+        Assert.Equal("f1.txt", names[0]);
+    }
+
+    [Fact]
+    public void Search_And_GotoIndex_OverFiveThousandFiles()
+    {
+        using var t = BuildTree(50, 100);
+        var search = new SearchService();
+        var results = search.Search(new SearchCriteria(t.Root, "*.txt"));
+        Assert.Equal(5000, results.Count);
+
+        var index = GotoIndex.BuildFromRoots([t.Root]);
+        Assert.Equal(51, index.Count);
+        Assert.Contains(index.Query("dir7"), p => p.EndsWith("dir7"));
+    }
+
+    [Fact]
+    public void LargeTreeOperations_StayInsideAGenerousBudget()
+    {
+        // A smoke guard against pathological regressions (quadratic dedupe,
+        // per-file stats in a hot loop), not a benchmark: the budget is wide
+        // enough for a loaded CI runner and far under what the old shapes cost.
+        using var t = BuildTree(50, 100);
+        var scanner = new DirectoryScanner();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        _ = scanner.ListDirectory(Path.Combine(t.Root, "dir0"), new WinFileSettings());
+        _ = new SearchService().Search(new SearchCriteria(t.Root, "*.txt"));
+        _ = GotoIndex.BuildFromRoots([t.Root]);
+        sw.Stop();
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(30), $"large-tree pass took {sw.Elapsed}");
+    }
+}
+
+public class DeleteConfirmationTests
+{
+    private static FileEntry Entry(bool dir = false, FileAttributes attrs = FileAttributes.Normal) =>
+        new(@"C:\work\thing", "thing", dir, 0, DateTime.UnixEpoch, DateTime.UnixEpoch, attrs, false, null);
+
+    [Fact]
+    public void PlainFile_Defaults_AsksForDelete()
+    {
+        Assert.Equal(DeleteConfirmReason.Delete,
+            SelectionService.DeleteConfirmationFor([Entry()], ConfirmationSettings.Default));
+    }
+
+    [Fact]
+    public void PlainFile_DeleteOff_NeedsNothing()
+    {
+        var c = ConfirmationSettings.Default with { OnDelete = false };
+        Assert.Equal(DeleteConfirmReason.None,
+            SelectionService.DeleteConfirmationFor([Entry()], c));
+    }
+
+    [Fact]
+    public void Directory_AsksForSubtreeDelete_ThenFallsBackToDelete()
+    {
+        Assert.Equal(DeleteConfirmReason.SubtreeDelete,
+            SelectionService.DeleteConfirmationFor([Entry(dir: true)], ConfirmationSettings.Default));
+        var c = ConfirmationSettings.Default with { OnSubtreeDelete = false };
+        Assert.Equal(DeleteConfirmReason.Delete,
+            SelectionService.DeleteConfirmationFor([Entry(dir: true)], c));
+    }
+
+    [Fact]
+    public void ProtectedFile_OutranksEverything()
+    {
+        var ro = Entry(attrs: FileAttributes.ReadOnly);
+        Assert.Equal(DeleteConfirmReason.ProtectedFile,
+            SelectionService.DeleteConfirmationFor([ro], ConfirmationSettings.Default));
+        Assert.Equal(DeleteConfirmReason.ProtectedFile,
+            SelectionService.DeleteConfirmationFor([Entry(dir: true, attrs: FileAttributes.Hidden)], ConfirmationSettings.Default));
+        var c = ConfirmationSettings.Default with { OnReadOnlySystemHidden = false };
+        Assert.Equal(DeleteConfirmReason.Delete,
+            SelectionService.DeleteConfirmationFor([ro], c));
+    }
+
+    [Fact]
+    public void EmptySelection_NeedsNothing()
+    {
+        Assert.Equal(DeleteConfirmReason.None,
+            SelectionService.DeleteConfirmationFor([], ConfirmationSettings.Default));
+    }
+}

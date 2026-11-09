@@ -12,7 +12,7 @@ public enum DialogKind
     None, Move, Copy, Rename, CreateDirectory, Search, Goto, Run, Associate, Properties,
     SelectFiles, Label, Format, CopyDisk, ConnectNetwork, DisconnectNetwork, SelectDrive,
     Font, CustomizeToolbar, Preferences, ByFileType, Split, Permissions, Auditing, Owner,
-    Message, About, HelpContents, HelpSearch, HowToUseHelp, Link,
+    Message, About, HelpContents, HelpSearch, HowToUseHelp, Link, Confirm,
 }
 
 /// <summary>All mutable frame state. The component owns one instance and re-renders by bumping a version counter.</summary>
@@ -114,7 +114,8 @@ public sealed class FrameModel
 
     public void EnsureGotoIndex()
     {
-        GotoIndex ??= GotoIndex.BuildFromDrives(Settings.GotoCachePunctuation);
+        GotoIndex ??= GotoIndex.BuildFromDrives(Settings.GotoCachePunctuation,
+            includeHiddenSystem: Settings.IndexHiddenSystem);
     }
 
     public void SaveSettings()
@@ -140,6 +141,15 @@ public sealed class FrameModel
         DialogBody = body;
         DialogInput1 = input1;
         DialogInput2 = input2;
+    }
+
+    /// <summary>The action a Confirm dialog runs when the user picks OK. Set by OpenConfirm.</summary>
+    public Action? PendingConfirm { get; set; }
+
+    public void OpenConfirm(string title, string body, Action action)
+    {
+        PendingConfirm = action;
+        OpenDialog(DialogKind.Confirm, title, body);
     }
 
     public string DialogTitle { get; set; } = string.Empty;
@@ -197,7 +207,8 @@ public sealed class WinFileApp : Component
         _watchedPath = _model.CurrentPath;
         try
         {
-            _watcher = new DirectoryWatcher(_model.CurrentPath);
+            _watcher = new DirectoryWatcher(_model.CurrentPath,
+                TimeSpan.FromMilliseconds(Math.Max(0, _model.Settings.ChangeNotifyTimeMs)));
             _watcher.Changed += (_, _) =>
             {
                 if (!_model.SearchMode) _model.Refresh();
@@ -240,7 +251,7 @@ public sealed class WinFileApp : Component
                 MenuItem("Copy to Clipboard\tCtrl+C", () => act(() => { _model.Clipboard.Copy(_model.Selection.ToList()); })),
                 MenuItem("Cut to Clipboard\tCtrl+X", () => act(() => { _model.Clipboard.Cut(_model.Selection.ToList()); })),
                 MenuItem("Paste\tCtrl+V", () => act(() => _model.Report(_model.Clipboard.Paste(_model.CurrentPath, ConflictChoice()), "Paste"))),
-                MenuItem("Delete...\tDel", () => act(() => _model.Report(_model.Ops.Delete(_model.Selection.ToList()), "Delete"))),
+                MenuItem("Delete...\tDel", () => act(() => RunDelete())),
                 MenuItem("Rename...\tF2", () => act(() => RequireSelection(sel, p =>
                     _model.OpenDialog(DialogKind.Rename, "Rename", $"Rename {p} to:", Path.GetFileName(p))))),
                 MenuItem("Properties...\tAlt+Enter", () => act(() => RequireSelection(sel, ShowProperties))),
@@ -311,6 +322,10 @@ public sealed class WinFileApp : Component
                     ToggleMenuItem("Date", s.PartialDetails.ShowDate, v => act(() => s.PartialDetails = s.PartialDetails with { ShowDate = v })),
                     ToggleMenuItem("Time", s.PartialDetails.ShowTime, v => act(() => s.PartialDetails = s.PartialDetails with { ShowTime = v })),
                     ToggleMenuItem("Attributes", s.PartialDetails.ShowAttributes, v => act(() => s.PartialDetails = s.PartialDetails with { ShowAttributes = v }))),
+                MenuSubItem("Lowercase",
+                    RadioMenuItem("Off", "lowercase", s.LowerCase == LowerCaseMode.Off, () => act(() => { s.LowerCase = LowerCaseMode.Off; _model.Refresh(); })),
+                    RadioMenuItem("Uppercase Names", "lowercase", s.LowerCase == LowerCaseMode.UppercaseNames, () => act(() => { s.LowerCase = LowerCaseMode.UppercaseNames; _model.Refresh(); })),
+                    RadioMenuItem("All Names", "lowercase", s.LowerCase == LowerCaseMode.All, () => act(() => { s.LowerCase = LowerCaseMode.All; _model.Refresh(); }))),
                 MenuSeparator(),
                 RadioMenuItem("Sort by Name", "sort", s.Sort == SortMode.Name, () => act(() => { s.Sort = SortMode.Name; _model.Refresh(); })),
                 RadioMenuItem("Sort by Type", "sort", s.Sort == SortMode.Type, () => act(() => { s.Sort = SortMode.Type; _model.Refresh(); })),
@@ -322,11 +337,12 @@ public sealed class WinFileApp : Component
                     _model.OpenDialog(DialogKind.ByFileType, "By File Type", "Include only these patterns, separated by semicolons:", s.IncludeFilter)))),
             Menu("Options",
                 MenuSubItem("Confirmation",
-                    ToggleMenuItem("Confirm on Delete", s.Confirmations.OnDelete, v => act(() => s.Confirmations = s.Confirmations with { OnDelete = v })),
+                    ToggleMenuItem("Confirm on File Delete", s.Confirmations.OnDelete, v => act(() => s.Confirmations = s.Confirmations with { OnDelete = v })),
+                    ToggleMenuItem("Confirm on Directory Delete", s.Confirmations.OnSubtreeDelete, v => act(() => s.Confirmations = s.Confirmations with { OnSubtreeDelete = v })),
                     ToggleMenuItem("Confirm on File Replace", s.Confirmations.OnReplace, v => act(() => s.Confirmations = s.Confirmations with { OnReplace = v })),
                     ToggleMenuItem("Confirm on Mouse Action", s.Confirmations.OnMouseAction, v => act(() => s.Confirmations = s.Confirmations with { OnMouseAction = v })),
-                    ToggleMenuItem("Confirm on Copy", s.Confirmations.OnCopy, v => act(() => s.Confirmations = s.Confirmations with { OnCopy = v })),
-                    ToggleMenuItem("Confirm on Move", s.Confirmations.OnMove, v => act(() => s.Confirmations = s.Confirmations with { OnMove = v }))),
+                    ToggleMenuItem("Confirm on Format", s.Confirmations.OnFormat, v => act(() => s.Confirmations = s.Confirmations with { OnFormat = v })),
+                    ToggleMenuItem("Confirm on System, Hidden, or Read-Only", s.Confirmations.OnReadOnlySystemHidden, v => act(() => s.Confirmations = s.Confirmations with { OnReadOnlySystemHidden = v }))),
                 MenuItem("Font...", () => act(() =>
                     _model.OpenDialog(DialogKind.Font, "Font", "Font name and size:", s.FontName, s.FontSize.ToString("0")))),
                 MenuItem("Customize Toolbar...", () => act(() =>
@@ -412,6 +428,8 @@ public sealed class WinFileApp : Component
             $"Attributes: {AttributesService.ToLetters(entry)}  (R read-only, H hidden, A archive, S system, C compressed, L link)\n" +
             (entry.IsReparsePoint ? $"Link target: {entry.LinkTarget}\n" : string.Empty) +
             "Set attributes with comma flags in the second box, for example R,H or -R:";
+        if (_model.Window.Selection.Count > 1)
+            body = $"{_model.Window.Selection.Count} objects selected. The attribute flags apply to all of them.\n" + body;
         _model.OpenDialog(DialogKind.Properties, "Properties", body, path,
             $"{(entry.IsReadOnly ? "R" : "-R")},{(entry.IsHidden ? "H" : "-H")}");
     }
@@ -453,7 +471,7 @@ public sealed class WinFileApp : Component
                 "open" => Button("Open", () => act(() => OpenSelected(false))),
                 "copy" => Button("Copy", () => act(() => { if (_model.SelectedPath is { } p) _model.OpenDialog(DialogKind.Copy, "Copy", $"Copy {p} to:", Path.GetDirectoryName(p) ?? string.Empty); })),
                 "move" => Button("Move", () => act(() => { if (_model.SelectedPath is { } p) _model.OpenDialog(DialogKind.Move, "Move", $"Move {p} to:", Path.GetDirectoryName(p) ?? string.Empty); })),
-                "delete" => Button("Delete", () => act(() => _model.Report(_model.Ops.Delete(_model.Selection.ToList()), "Delete"))),
+                "delete" => Button("Delete", () => act(() => RunDelete())),
                 "rename" => Button("Rename", () => act(() => { if (_model.SelectedPath is { } p) _model.OpenDialog(DialogKind.Rename, "Rename", $"Rename {p} to:", Path.GetFileName(p)); })),
                 "search" => Button("Search", () => act(() => _model.OpenDialog(DialogKind.Search, "Search", "Pattern:", "*.*"))),
                 "properties" => Button("Properties", () => act(() => { if (_model.SelectedPath is { } p) ShowProperties(p); })),
@@ -554,7 +572,8 @@ public sealed class WinFileApp : Component
     {
         var marker = selected ? "> " : "  ";
         var link = entry.IsReparsePoint ? "  >SYMLINK>" : string.Empty;
-        var name = entry.IsDirectory ? $"[{entry.Name}]" : entry.Name;
+        var display = Formatting.DisplayName(entry.Name, _model.Settings.LowerCase);
+        var name = entry.IsDirectory ? $"[{display}]" : display;
         return _model.Settings.ViewDetails switch
         {
             ViewDetailMode.NameOnly => $"{marker}{name}{link}",
@@ -582,14 +601,14 @@ public sealed class WinFileApp : Component
         var parts = new List<Element> { TextBlock(_model.DialogTitle) };
         if (_model.DialogBody.Length > 0) parts.Add(TextBlock(_model.DialogBody));
         if (DialogHasInputs(kind))
-        {
             parts.Add(TextBox(_model.DialogInput1, v => { _model.DialogInput1 = v; }, placeholderText: "Value"));
-            if (DialogHasSecondInput(kind))
-                parts.Add(TextBox(_model.DialogInput2, v => { _model.DialogInput2 = v; }, placeholderText: "Second value"));
-        }
+        if (DialogHasSecondInput(kind))
+            parts.Add(TextBox(_model.DialogInput2, v => { _model.DialogInput2 = v; }, placeholderText: "Second value"));
         var buttons = new List<Element>();
-        if (DialogHasInputs(kind) || kind == DialogKind.Properties || kind == DialogKind.Permissions || kind == DialogKind.Owner)
-            buttons.Add(Button("OK", () => act(() => ExecuteDialog(kind))));
+        if (kind == DialogKind.SelectFiles)
+            buttons.Add(Button("Deselect", () => act(() => ExecuteDeselect())));
+        if (DialogHasInputs(kind) || kind == DialogKind.Properties || kind == DialogKind.Permissions || kind == DialogKind.Owner || kind == DialogKind.Confirm)
+            buttons.Add(Button(kind == DialogKind.SelectFiles ? "Select" : "OK", () => act(() => ExecuteDialog(kind))));
         buttons.Add(Button("Close", () => act(() => _model.Dialog = DialogKind.None)));
         parts.Add(HStack(8, buttons.ToArray()));
         return Border(VStack(8, parts.ToArray())).Margin(horizontal: 8, vertical: 6);
@@ -601,11 +620,64 @@ public sealed class WinFileApp : Component
         DialogKind.SelectFiles or DialogKind.Label or DialogKind.Format or DialogKind.CopyDisk or
         DialogKind.ConnectNetwork or DialogKind.DisconnectNetwork or DialogKind.SelectDrive or
         DialogKind.Font or DialogKind.CustomizeToolbar or DialogKind.Preferences or
-        DialogKind.ByFileType or DialogKind.Split or DialogKind.Link;
+        DialogKind.ByFileType or DialogKind.Split or DialogKind.Link or
+        DialogKind.Permissions or DialogKind.Owner;
 
     private static bool DialogHasSecondInput(DialogKind kind) => kind is
         DialogKind.Associate or DialogKind.ConnectNetwork or DialogKind.Font or DialogKind.Preferences or
-        DialogKind.Format;
+        DialogKind.Format or DialogKind.Properties or DialogKind.Permissions;
+
+    private void RunDelete()
+    {
+        var paths = _model.Selection.ToList();
+        if (paths.Count == 0) return;
+        var entries = new List<FileEntry>();
+        foreach (var path in paths)
+        {
+            var entry = _model.Entries.FirstOrDefault(e =>
+                string.Equals(e.FullPath, path, StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+            {
+                try
+                {
+                    entry = FileEntry.FromFileSystemInfo(Directory.Exists(path)
+                        ? (FileSystemInfo)new DirectoryInfo(path)
+                        : new FileInfo(path));
+                }
+                catch { /* an entry that cannot be probed gates as a plain file below */ }
+            }
+            entries.Add(entry ?? new FileEntry(path, Path.GetFileName(path), false, 0,
+                DateTime.MinValue, DateTime.MinValue, FileAttributes.Normal, false, null));
+        }
+        var reason = SelectionService.DeleteConfirmationFor(entries, _model.Settings.Confirmations);
+        if (reason == DeleteConfirmReason.None)
+        {
+            _model.Report(_model.Ops.Delete(paths), "Delete");
+            return;
+        }
+        var body = reason switch
+        {
+            DeleteConfirmReason.ProtectedFile =>
+                "A selected object is system, hidden, or read-only. Delete anyway?",
+            DeleteConfirmReason.SubtreeDelete =>
+                "A selected directory and everything in it will be deleted. Continue?",
+            _ => paths.Count == 1
+                ? $"Delete {Path.GetFileName(paths[0])}?"
+                : $"Delete {paths.Count} objects?",
+        };
+        _model.OpenConfirm("Delete", body, () => _model.Report(_model.Ops.Delete(paths), "Delete"));
+    }
+
+    private void ExecuteDeselect()
+    {
+        var input1 = _model.DialogInput1.Trim();
+        var remaining = SelectionService.DeselectByPattern(_model.Entries,
+            input1.Length > 0 ? input1 : "*.*", _model.Window.Selection);
+        _model.Window.Selection.Clear();
+        _model.Window.Selection.AddRange(remaining);
+        _model.Dialog = DialogKind.None;
+        _model.Refresh();
+    }
 
     private void ExecuteDialog(DialogKind kind)
     {
@@ -615,6 +687,13 @@ public sealed class WinFileApp : Component
         var sel = _model.SelectedPath;
         switch (kind)
         {
+            case DialogKind.Confirm:
+            {
+                var pending = _model.PendingConfirm;
+                _model.PendingConfirm = null;
+                pending?.Invoke();
+                break;
+            }
             case DialogKind.Move:
                 if (sel is not null) _model.Report(_model.Ops.Move([sel], input1, ConflictChoice()), "Move");
                 break;
@@ -660,19 +739,21 @@ public sealed class WinFileApp : Component
                 }
                 break;
             case DialogKind.Properties:
-                if (sel is not null)
+            {
+                bool? r = null, h = null;
+                foreach (var token in input2.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
                 {
-                    bool? r = null, h = null;
-                    foreach (var token in input2.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        if (token.Equals("R", StringComparison.OrdinalIgnoreCase)) r = true;
-                        else if (token.Equals("-R", StringComparison.OrdinalIgnoreCase)) r = false;
-                        else if (token.Equals("H", StringComparison.OrdinalIgnoreCase)) h = true;
-                        else if (token.Equals("-H", StringComparison.OrdinalIgnoreCase)) h = false;
-                    }
-                    AttributesService.Set(sel, readOnly: r, hidden: h);
+                    if (token.Equals("R", StringComparison.OrdinalIgnoreCase)) r = true;
+                    else if (token.Equals("-R", StringComparison.OrdinalIgnoreCase)) r = false;
+                    else if (token.Equals("H", StringComparison.OrdinalIgnoreCase)) h = true;
+                    else if (token.Equals("-H", StringComparison.OrdinalIgnoreCase)) h = false;
                 }
+                // With several objects selected this is the original's group
+                // attributes path: the flags apply to every selected object.
+                foreach (var path in _model.Window.Selection.ToList())
+                    AttributesService.Set(path, readOnly: r, hidden: h);
                 break;
+            }
             case DialogKind.SelectFiles:
             {
                 var picked = SelectionService.SelectByPattern(_model.Entries, input1.Length > 0 ? input1 : "*.*");

@@ -149,4 +149,18 @@ public class CliEndToEndTests
         Assert.False(WinFileCli.IsCliCommand("C:\\some\\path"));
         Assert.False(WinFileCli.IsCliCommand(null));
     }
+
+    [Fact]
+    public void SearchAndList_OverALargeTree()
+    {
+        using var t = new TestDir();
+        for (var d = 0; d < 20; d++)
+            for (var f = 0; f < 50; f++)
+                t.File($"dir{d}/file{f}.bin");
+        var search = RunCli("search", t.Root, "*.bin");
+        Assert.Equal(0, search.Exit);
+        var list = RunCli("ls", Path.Combine(t.Root, "dir3"));
+        Assert.Equal(0, list.Exit);
+        Assert.Contains("file7.bin", list.Out);
+    }
 }

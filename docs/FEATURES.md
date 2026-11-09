@@ -17,14 +17,14 @@ Every row names a feature of the original WinFile (the enhanced master branch of
 | Paste (Ctrl+V) | App menu. Core: `ClipboardModel.Paste`. Same-directory copies get `- Copy` |
 | Delete (Del) | App menu. Core: `FileOperations.Delete`. Recycle Bin path: `RecycleBinService` |
 | Rename (F2) | App dialog. Core: `FileOperations.Rename`. CLI: `rename` |
-| Properties (Alt+Enter) | App dialog with attribute editing. Core: `AttributesService` |
+| Properties (Alt+Enter) | App dialog with attribute editing; with several objects selected the flags apply to all of them, the original's group attributes path. Core: `AttributesService` |
 | Compress / Uncompress | App menu. Core: `CompressionService` through compact.exe |
 | Run | App dialog. Core: `ShellService.Run`. CLI: `run` |
 | Print | App menu. Core: `ShellService.Print` with the print verb. CLI: `print` |
 | Associate | App dialog. Core: `AssociationService` over HKEY_CLASSES_ROOT. CLI: `associate` |
 | Create Directory (Ctrl+Shift+N) | App dialog. Core: `FileOperations.CreateDirectory`. CLI: `mkdir` |
 | Search (Ctrl+F) | App dialog. Core: `SearchService`, recursive, optional modified-after date, results sorted by date. CLI: `search` |
-| Select Files | App dialog. Core: `SelectionService` |
+| Select Files | App dialog with Select and Deselect, as the original's dialog has both. Core: `SelectionService` |
 | Start: Bash (Ctrl+B), Cmd (Ctrl+K), PowerShell (Ctrl+P), Explorer (Ctrl+E) | App submenu. Core: `ShellService.StartShell`. Elevated shell uses the runas verb |
 | Goto Directory (Ctrl+G) | App dialog. Core: `GotoIndex` with configurable word punctuation. CLI: `goto` |
 | Exit | App menu. Saves settings first when Save Settings on Exit is on |
@@ -52,11 +52,12 @@ Expand One Level, Expand Branch, Expand All, and Collapse Branch map to `Directo
 - Details: Name, All File Details, Partial Details with size, date, time, and attribute choices.
 - Sort: Name, Type, Size, Date, and forward Date. Directories first. Names use natural sort.
 - By File Type: semicolon patterns such as `*.txt;*.md`, stored as `IncludeFilter`.
+- Lowercase: Off, Uppercase Names, or All Names. This is the original's LowerCase display attribute (winfile.h TA_LOWERCASE and TA_LOWERCASEALL), stored as the `LowerCase` value in Winfile.ini: names stored all-uppercase display lowercase in the first mode, every name in the second. Display only. The original exposes it only through the ini value; the menu here is an addition.
 
 ## Options menu
 
-- Confirmation: five toggles, delete, replace, mouse action, copy, move. Stored as one flags line in Winfile.ini.
-- Font: name and size, persisted.
+- Confirmation: the original's six toggles: file delete, directory delete, file replace, mouse action, format, and system, hidden, or read-only files. Stored as the original's six Confirm* keys in Winfile.ini. The toggles gate the operations: delete asks first under File Delete, a directory in the selection asks under Directory Delete, and a system, hidden, or read-only object asks under its own toggle, in that priority order (`SelectionService.DeleteConfirmationFor`). File Replace already drives the copy and move conflict choice. The Format dialog is itself the format confirmation. Mouse Action has no surface here: this build moves files with the clipboard, not OLE drag and drop.
+- Font: name and size in the dialog; name, size, and weight persisted as `Face`, `Size`, and `FaceWeight`. Size is whole points, as the original stores it.
 - Customize Toolbar: comma separated button ids, persisted.
 - Additional Preferences: editor path, Goto punctuation, scroll on expand, hidden and system file visibility.
 - Toolbar, Drivebar, Status Bar: visibility toggles.
@@ -75,6 +76,10 @@ New Window, Cascade, Tile Horizontally, Tile Vertically, Arrange Icons, and Refr
 
 Contents, Search for Help on, How to Use Help, and About File Manager. Contents also lives in the App as `HelpText`. Console mode prints its own help.
 
+## Winfile.ini compatibility
+
+Settings live in the original's layout, so one Winfile.ini serves both programs: a single `[Settings]` section with the original's key names from winfile.h. `ToolBar`, `DriveBar`, `StatusBar`, `MinOnRun`, `IndexOnLaunch`, `IndexHiddenSystem`, `Save Settings`, `ScrollOnExpand`, `EditorPath`, `CachedPath`, `GotoCachePunctuation`, the six `Confirm*` keys, `ChangeNotifyTime`, `Face`, `Size`, `FaceWeight`, `LowerCase`, `NewWinOnNetConnect`, and `Window` all read and write under those names, booleans as integers. `Window` round-trips in the original's exact shape: left, top, width, height, two empty fields, and the show command. Loading reads the original's keys first and falls back to this app's first-release layout, so an ini from the first release keeps working. Saving edits the file on disk at the line level: keys update in place, sections and keys this app does not own, `[AddOns]` above all, survive untouched, and comments survive with them. The original likewise ignores the extra keys this app keeps for its own state (sort, view, pane, filter, split, toolbar buttons).
+
 ## Behavior details worth naming
 
 - Long paths: the manifest declares longPathAware and `Formatting.ToLongPath` applies the `\\?\` form past 260 characters. The original handled paths up to 1024 characters the same way.
@@ -83,3 +88,6 @@ Contents, Search for Help on, How to Use Help, and About File Manager. Contents 
 - OLE drag and drop in the original maps to clipboard copy, cut, and paste here, plus the link modifiers: Ctrl+Shift for a symlink, Ctrl+Shift+Alt for a hard link or junction.
 - The status bar shows the current directory, the object count, selected bytes, and free space, formatted by `Formatting.FormatStatusLine`.
 - The `- Copy` suffix rule, search sorted by date, resizable dialog behavior, and relative path handling on the command line all match the 10.x change history.
+- Directory listing and search read the file system's find data directly (`FileEntry.FromEntry` over `FileSystemEnumerable`), so a large directory costs no per-file stat call. The status bar probes only the drive the current path lives on, not every drive on the machine.
+- Directory watching honors `ChangeNotifyTime` (default 3000 ms): a burst of changes refreshes the pane once, after the burst settles, instead of once per file.
+- The goto index dedupes through a hash set. Building it over a full drive is linear in the directory count, not quadratic.

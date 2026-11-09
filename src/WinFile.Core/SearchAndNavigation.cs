@@ -15,28 +15,35 @@ public sealed class SearchService
         var root = Formatting.StripLongPathPrefix(criteria.RootPath);
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException($"Directory not found: {criteria.RootPath}");
         var patterns = FileTypeFilter.ParsePatterns(criteria.Pattern);
-        var option = criteria.IncludeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         var results = new List<FileEntry>();
 
-        IEnumerable<string> files;
-        try
-        {
-            files = Directory.EnumerateFiles(root, "*", option);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            files = EnumerateTolerant(root, criteria.IncludeSubdirectories);
-        }
-
-        foreach (var file in files)
+        // Walk directory by directory on the scanner's find-data enumeration.
+        // Entries arrive with size and times attached, so a search over a big
+        // tree costs no per-file stat, and a directory that cannot be read is
+        // skipped instead of ending the search: enumeration here is tolerant
+        // by construction (the previous lazy EnumerateFiles fallback could
+        // never catch the errors it was written for, because they surface
+        // during enumeration, outside its try block).
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!FileTypeFilter.Matches(Path.GetFileName(file), patterns)) continue;
-            FileEntry entry;
-            try { entry = FileEntry.FromFileSystemInfo(new FileInfo(file)); }
-            catch { continue; }
-            if (criteria.ModifiedAfterUtc is { } after && entry.LastWriteTimeUtc <= after) continue;
-            results.Add(entry);
+            var current = pending.Pop();
+            foreach (var entry in DirectoryScanner.EnumerateEntries(current))
+            {
+                // Per entry, not per directory: one directory can hold more
+                // files than the whole rest of the tree.
+                cancellationToken.ThrowIfCancellationRequested();
+                if (entry.IsDirectory)
+                {
+                    if (criteria.IncludeSubdirectories) pending.Push(entry.FullPath);
+                    continue;
+                }
+                if (!FileTypeFilter.Matches(entry.Name, patterns)) continue;
+                if (criteria.ModifiedAfterUtc is { } after && entry.LastWriteTimeUtc <= after) continue;
+                results.Add(entry);
+            }
         }
 
         // The enhanced WinFile sorts search output by date, newest first.
@@ -46,23 +53,6 @@ public sealed class SearchService
             return byDate != 0 ? byDate : NaturalStringComparer.Instance.Compare(a.Name, b.Name);
         });
         return results;
-    }
-
-    private static IEnumerable<string> EnumerateTolerant(string root, bool recursive)
-    {
-        var pending = new Stack<string>();
-        pending.Push(root);
-        while (pending.Count > 0)
-        {
-            var current = pending.Pop();
-            string[] files = [];
-            string[] dirs = [];
-            try { files = Directory.GetFiles(current); } catch { }
-            foreach (var f in files) yield return f;
-            if (!recursive) yield break;
-            try { dirs = Directory.GetDirectories(current); } catch { }
-            foreach (var d in dirs) pending.Push(d);
-        }
     }
 }
 

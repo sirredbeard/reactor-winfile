@@ -150,3 +150,77 @@ public class ComposedWorkflowTests
         Assert.Empty(none);
     }
 }
+
+/// <summary>
+/// Settings interoperability with the original, end to end through the store:
+/// a file the original wrote loads, a change saves back in the original's
+/// layout, and sections owned by neither side of the change survive.
+/// </summary>
+public class SettingsInteropTests : IDisposable
+{
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"winfile-interop-{Guid.NewGuid():N}.ini");
+    private readonly SettingsStore _store = new();
+
+    public void Dispose()
+    {
+        if (File.Exists(_path)) File.Delete(_path);
+    }
+
+    [Fact]
+    public void OriginalFile_Loads_Changes_SaveBackInTheOriginalLayout()
+    {
+        File.WriteAllText(_path, """
+            [Settings]
+            ToolBar=1
+            ConfirmDelete=1
+            ChangeNotifyTime=3000
+            Face=Segoe UI
+            Size=11
+            LowerCase=1
+
+            [AddOns]
+            ToolbarEx=C:\addons\toolbarex.dll
+
+            [Previous]
+            Count=2
+            """);
+        var s = _store.Load(_path);
+        Assert.Equal(LowerCaseMode.UppercaseNames, s.LowerCase);
+        s.LowerCase = LowerCaseMode.All;
+        s.ChangeNotifyTimeMs = 500;
+        _store.Save(_path, s);
+
+        var text = File.ReadAllText(_path);
+        Assert.Contains("LowerCase=8", text);
+        Assert.Contains("ChangeNotifyTime=500", text);
+        Assert.Contains(@"ToolbarEx=C:\addons\toolbarex.dll", text);
+        Assert.Contains("[Previous]", text);
+
+        var reloaded = _store.Load(_path);
+        Assert.Equal(LowerCaseMode.All, reloaded.LowerCase);
+        Assert.Equal(500, reloaded.ChangeNotifyTimeMs);
+        Assert.True(reloaded.Confirmations.OnDelete);
+    }
+
+    [Fact]
+    public void NewFields_RoundTrip()
+    {
+        var saved = new WinFileSettings
+        {
+            ChangeNotifyTimeMs = 1250,
+            FontWeight = 700,
+            NewWindowOnConnect = true,
+            IndexHiddenSystem = true,
+            LowerCase = LowerCaseMode.UppercaseNames,
+            Confirmations = new ConfirmationSettings(true, false, true, false, true, false),
+        };
+        _store.Save(_path, saved);
+        var loaded = _store.Load(_path);
+        Assert.Equal(1250, loaded.ChangeNotifyTimeMs);
+        Assert.Equal(700, loaded.FontWeight);
+        Assert.True(loaded.NewWindowOnConnect);
+        Assert.True(loaded.IndexHiddenSystem);
+        Assert.Equal(LowerCaseMode.UppercaseNames, loaded.LowerCase);
+        Assert.Equal(saved.Confirmations, loaded.Confirmations);
+    }
+}

@@ -203,10 +203,10 @@ public sealed class FileOperations
             if (onConflict == ConflictAction.Skip) return;
             if (onConflict == ConflictAction.Fail) throw new IOException($"Destination already exists: {dest}");
         }
-        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var output = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 1_048_576, FileOptions.SequentialScan))
+        using (var output = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None, 1_048_576, FileOptions.SequentialScan))
         {
-            var buffer = new byte[81920];
+            var buffer = new byte[1_048_576];
             int read;
             while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
             {
@@ -256,5 +256,38 @@ public static class SelectionService
     {
         var patterns = FileTypeFilter.ParsePatterns(pattern);
         return entries.Where(e => FileTypeFilter.Matches(e.Name, patterns)).ToList();
+    }
+
+    /// <summary>
+    /// Which confirmation, if any, a delete of these entries needs under the
+    /// original's rules. A protected entry (system, hidden, or read-only)
+    /// outranks a directory delete, which outranks a plain file delete.
+    /// </summary>
+    public static DeleteConfirmReason DeleteConfirmationFor(IEnumerable<FileEntry> selected, ConfirmationSettings confirmations)
+    {
+        var any = false;
+        var anyDirectory = false;
+        var anyProtected = false;
+        foreach (var entry in selected)
+        {
+            any = true;
+            anyDirectory |= entry.IsDirectory;
+            anyProtected |= entry.IsReadOnly || entry.IsSystem || entry.IsHidden;
+        }
+        if (!any) return DeleteConfirmReason.None;
+        if (anyProtected && confirmations.OnReadOnlySystemHidden) return DeleteConfirmReason.ProtectedFile;
+        if (anyDirectory && confirmations.OnSubtreeDelete) return DeleteConfirmReason.SubtreeDelete;
+        return confirmations.OnDelete ? DeleteConfirmReason.Delete : DeleteConfirmReason.None;
+    }
+
+    /// <summary>The Select Files dialog's Deselect button: the current selection minus every entry the pattern matches.</summary>
+    public static IReadOnlyList<string> DeselectByPattern(IEnumerable<FileEntry> entries, string pattern, IEnumerable<string> currentSelection)
+    {
+        var patterns = FileTypeFilter.ParsePatterns(pattern);
+        var remove = entries
+            .Where(e => FileTypeFilter.Matches(e.Name, patterns))
+            .Select(e => e.FullPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return currentSelection.Where(p => !remove.Contains(p)).ToList();
     }
 }
