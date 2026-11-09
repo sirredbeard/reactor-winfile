@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.UI.Reactor" Version="0.1.0-preview.17" />
+    <!-- Reference the WinUI slice like the Reactor repo does, not the
+         metapackage: the metapackage aggregates AI/ML/Widgets packages this
+         app never uses, and its extra payload targets break the AOT publish. -->
+    <PackageVersion Include="Microsoft.WindowsAppSDK.WinUI" Version="2.2.1" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.Runtime" Version="2.2.0" />
+    <PackageVersion Include="Microsoft.Win32.Registry" Version="5.0.0" />
+    <PackageVersion Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
+</Project>

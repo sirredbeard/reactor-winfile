@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net11.0-windows10.0.22621.0</TargetFramework>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RootNamespace>ReactorWinFile</RootNamespace>
+    <AssemblyName>winfile</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- One binary per architecture. CI publishes with PublishAot=true for the native build. -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" />
+    <PackageReference Include="Microsoft.UI.Reactor" />
+    <ProjectReference Include="..\WinFile.Core\WinFile.Core.csproj" />
+  </ItemGroup>
+  <!-- The app is code-only Reactor: no XAML pages, so the build generates no
+       winfile.pri, but the Windows App SDK / MSIX targets still queue it for
+       the publish copy and fail with MSB3030. Strip the phantom entry wherever
+       it is queued when the file was not produced. Two target names on
+       purpose: MSBuild runs a named target only once per project, so a single
+       target hooked into several BeforeTargets fires at the first hook point
+       (build time) and never again at publish time. The framework .pri files
+       still ship from the runtime pack. -->
+  <Target Name="DropUngeneratedPriAtBuild" BeforeTargets="AddPriPayloadFilesToCopyToOutputDirectoryItems">
+    <ItemGroup>
+      <_PhantomPriRef Include="@(_ReferenceRelatedPaths)" Condition="'%(_ReferenceRelatedPaths.Filename)' == 'winfile' and '%(_ReferenceRelatedPaths.Extension)' == '.pri' and !Exists('%(_ReferenceRelatedPaths.FullPath)')" />
+      <_ReferenceRelatedPaths Remove="@(_PhantomPriRef)" />
+      <_PhantomPriCopy Include="@(ReferenceCopyLocalPaths)" Condition="'%(ReferenceCopyLocalPaths.Filename)' == 'winfile' and '%(ReferenceCopyLocalPaths.Extension)' == '.pri' and !Exists('%(ReferenceCopyLocalPaths.FullPath)')" />
+      <ReferenceCopyLocalPaths Remove="@(_PhantomPriCopy)" />
+    </ItemGroup>
+  </Target>
+  <Target Name="DropUngeneratedPriAtPublish"
+          BeforeTargets="_ComputeResolvedFilesToPublishTypes;_CopyResolvedFilesToPublishAlways;_CopyResolvedFilesToPublishPreserveNewest;_CopyResolvedFilesToPublishIfDifferent">
+    <ItemGroup>
+      <_PhantomPri Include="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.Filename)' == 'winfile' and '%(ResolvedFileToPublish.Extension)' == '.pri' and !Exists('%(ResolvedFileToPublish.FullPath)')" />
+      <ResolvedFileToPublish Remove="@(_PhantomPri)" />
+      <_PhantomPriA Include="@(_ResolvedFileToPublishAlways)" Condition="'%(_ResolvedFileToPublishAlways.Filename)' == 'winfile' and '%(_ResolvedFileToPublishAlways.Extension)' == '.pri' and !Exists('%(_ResolvedFileToPublishAlways.FullPath)')" />
+      <_ResolvedFileToPublishAlways Remove="@(_PhantomPriA)" />
+      <_PhantomPriP Include="@(_ResolvedFileToPublishPreserveNewest)" Condition="'%(_ResolvedFileToPublishPreserveNewest.Filename)' == 'winfile' and '%(_ResolvedFileToPublishPreserveNewest.Extension)' == '.pri' and !Exists('%(_ResolvedFileToPublishPreserveNewest.FullPath)')" />
+      <_ResolvedFileToPublishPreserveNewest Remove="@(_PhantomPriP)" />
+      <_PhantomPriD Include="@(_ResolvedFileToPublishIfDifferent)" Condition="'%(_ResolvedFileToPublishIfDifferent.Filename)' == 'winfile' and '%(_ResolvedFileToPublishIfDifferent.Extension)' == '.pri' and !Exists('%(_ResolvedFileToPublishIfDifferent.FullPath)')" />
+      <_ResolvedFileToPublishIfDifferent Remove="@(_PhantomPriD)" />
+    </ItemGroup>
+  </Target>
+</Project>

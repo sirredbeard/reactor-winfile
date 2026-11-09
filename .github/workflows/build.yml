@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and test (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 11
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "11.0.x"
+          dotnet-quality: "preview"
+      - name: Restore
+        run: dotnet restore ReactorWinFile.slnx
+      - name: Build app
+        run: dotnet build src/ReactorWinFile/ReactorWinFile.csproj -c Release -p:Platform=x64 --no-restore
+      - name: Unit tests
+        run: dotnet test tests/WinFile.UnitTests -c Release
+      - name: Functional tests
+        run: dotnet test tests/WinFile.FunctionalTests -c Release
+      - name: Integration tests
+        run: dotnet test tests/WinFile.IntegrationTests -c Release
+      - name: End-to-end tests (console mode)
+        run: dotnet test tests/WinFile.E2ETests -c Release
+
+  publish:
+    name: Publish single binary (${{ matrix.rid }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            platform: x64
+            smoke: true
+          - rid: win-arm64
+            platform: ARM64
+            smoke: false
+    # Both RIDs publish from the x64 host: Native AOT cross-compiles win-arm64,
+    # and the windows-11-arm64 hosted runners queue too long to be useful.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 11
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "11.0.x"
+          dotnet-quality: "preview"
+      - name: Publish (Native AOT, self-contained)
+        run: >
+          dotnet publish src/ReactorWinFile/ReactorWinFile.csproj
+          -c Release -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }}
+          -p:PublishAot=true --self-contained true
+          -o out/${{ matrix.rid }}
+      - name: End-to-end smoke test of the shipped binary
+        if: matrix.smoke
+        shell: pwsh
+        run: |
+          $exe = "out/${{ matrix.rid }}/winfile.exe"
+          if (-not (Test-Path $exe)) { throw "winfile.exe was not produced" }
+          # winfile.exe is a GUI-subsystem binary: PowerShell does not wait for
+          # those with a plain &, so drive it through Start-Process -Wait.
+          function Run-WinFile([string[]]$a) {
+            $p = Start-Process $exe -ArgumentList $a -Wait -PassThru -NoNewWindow
+            return $p.ExitCode
+          }
+          if ((Run-WinFile @('--self-test', 'self-test-result.txt')) -ne 0) { throw "self-test failed" }
+          Get-Content self-test-result.txt
+          if ((Run-WinFile @('version')) -ne 0) { throw "version verb failed" }
+          if ((Run-WinFile @('help')) -ne 0) { throw "help verb failed" }
+      - name: Verify the cross-compiled binary exists
+        if: ${{ !matrix.smoke }}
+        shell: pwsh
+        run: |
+          $exe = "out/${{ matrix.rid }}/winfile.exe"
+          if (-not (Test-Path $exe)) { throw "winfile.exe was not produced" }
+          Get-Item $exe | Select-Object Name, Length
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: winfile-${{ matrix.rid }}
+          path: out/${{ matrix.rid }}
+          if-no-files-found: error

@@ -1,0 +1,17 @@
+## Build output
+bin/
+obj/
+out/
+
+## Test results
+TestResults/
+*.trx
+
+## Local tooling
+.vs/
+.idea/
+*.user
+.DS_Store
+
+## Self-test output
+self-test-result.txt

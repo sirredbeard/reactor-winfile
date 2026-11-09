@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WinFile.Core/WinFile.Core.csproj" />
+    <Project Path="src/ReactorWinFile/ReactorWinFile.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WinFile.UnitTests/WinFile.UnitTests.csproj" />
+    <Project Path="tests/WinFile.FunctionalTests/WinFile.FunctionalTests.csproj" />
+    <Project Path="tests/WinFile.IntegrationTests/WinFile.IntegrationTests.csproj" />
+    <Project Path="tests/WinFile.E2ETests/WinFile.E2ETests.csproj" />
+  </Folder>
+</Solution>
